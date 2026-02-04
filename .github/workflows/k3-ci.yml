@@ -41,6 +41,7 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          pwd
           sudo -E rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
           sudo -E apt-mark hold grub-efi-amd64-signed
           sudo -E apt update
@@ -55,6 +56,7 @@ jobs:
 
       - name: Update feeds
         run: |
+          pwd
           sed -i 's/^#\(.*helloworld\)/\1/' feeds.conf.default
           sed -i 's/23.05/25.12/g' feeds.conf.default
           ./scripts/feeds update -a
@@ -62,6 +64,7 @@ jobs:
 
       - name: Generate configuration file
         run: |
+          pwd
           rm -f ./.config*
           touch ./.config
 
@@ -80,17 +83,19 @@ jobs:
           # 
 
           sed -i 's/^[ \t]*//g' ./.config
+          pwd
           make defconfig
 
       - name: Make download
         run: |
-          make download -j8 || make download -j1 V=s
+          pwd
+          make download -j8 V=s
           rm -rf $(find ./dl/ -size -1024c)
           df -h
 
       - name: Compile firmware
         run: |
-          make -j$(nproc) || make -j1 V=s
+          make -j10 V=1
           echo "======================="
           echo "Space usage:"
           echo "======================="
