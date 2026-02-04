@@ -5,11 +5,10 @@
 #
 # Copyright (C) 2020 KFERMercer
 #
-name: OpenWrt-CI
+name: lede-CI
 
 on:
-  schedule:
-    - cron: 0 20 * * *
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,7 +26,6 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          docker image prune -f
           sudo -E rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
           sudo -E apt-mark hold grub-efi-amd64-signed
           sudo -E apt update
@@ -59,8 +57,8 @@ jobs:
       - name: Update feeds
         run: |
           sed -i 's/#src-git helloworld/src-git helloworld/g' ./feeds.conf.default
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          ./scripts/feeds update -af
+          ./scripts/feeds install -af
 
       - name: Generate configuration file
         run: make defconfig

@@ -1,0 +1,166 @@
+#
+# This is free software, licensed under the MIT License.
+# 
+# Copyright (C) 2019 P3TERX <https://p3terx.com>
+# Copyright (C) 2020 KFERMercer <KFER.Mercer@gmail.com>
+# 
+# <https://github.com/KFERMercer/OpenWrt-CI>
+#
+
+name: k3-CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release Tag for manual upload (e.g., v1.0.0)'
+        required: false
+        default: ''
+        type: string
+  # schedule:
+  #   - cron: 0 20 * * * # 如需定时编译，取消注释并调整 cron 表达式
+  release:
+    types: [published] # 当创建新 Release 时自动上传固件
+
+jobs:
+
+  build_openwrt:
+
+    name: Build OpenWrt firmware
+
+    runs-on: ubuntu-22.04
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Space cleanup
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
+          sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* || true
+          sudo -E apt-get update
+          sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf swig libtinfo5
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          
+          df -h
+
+      - name: Update feeds
+        run: |
+          sed -i 's/^#\(.*helloworld\)/\1/' feeds.conf.default
+          sed -i 's/23.05/25.12/g' feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Generate configuration file
+        run: |
+          rm -f ./.config*
+          touch ./.config
+
+          #
+          # 在 cat >> .config <<EOF 到 EOF 之间粘贴你的编译配置, 需注意缩进关系
+          # 例如:
+
+          cat >> .config <<EOF
+          CONFIG_TARGET_IMAGES_GZIP=y
+          CONFIG_KERNEL_BUILD_USER="OpenWrt-CI"
+          CONFIG_KERNEL_BUILD_DOMAIN="Azure"
+          EOF
+
+          #
+          # ===============================================================
+          # 
+
+          sed -i 's/^[ \t]*//g' ./.config
+          make defconfig
+
+      - name: Make download
+        run: |
+          make download -j8 || make download -j1 V=s
+          rm -rf $(find ./dl/ -size -1024c)
+          df -h
+
+      - name: Compile firmware
+        run: |
+          make -j$(nproc) || make -j1 V=s
+          echo "======================="
+          echo "Space usage:"
+          echo "======================="
+          df -h
+          echo "======================="
+          du -h ./ --max-depth=1
+          du -h /mnt/openwrt/ --max-depth=1 || true
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p ./artifact/firmware
+          mkdir -p ./artifact/package
+          mkdir -p ./artifact/buildinfo
+          rm -rf $(find ./bin/targets/ -type d -name "packages")
+          cp -rf $(find ./bin/targets/ -type f) ./artifact/firmware/
+          cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
+          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
+
+      - name: Deliver buildinfo
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_buildinfo
+          path: ./artifact/buildinfo/
+
+      - name: Deliver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_package
+          path: ./artifact/package/
+
+      - name: Deliver firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_firmware
+          path: ./bin/targets/
+
+      # --- 新增步骤：处理手动触发的上传 ---
+      - name: Get Release Tag for Manual Dispatch
+        id: get_tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ -n "${{ inputs.release_tag }}" ]]; then
+            echo "RELEASE_TAG=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
+          else
+            # 如果未输入，尝试从 .config 或其他地方提取版本信息，或使用默认值
+            # 这里使用一个默认值作为示例，或者你可以通过其他方式生成一个版本号
+            DEFAULT_TAG="manual-build-$(date +%Y%m%d-%H%M%S)"
+            echo "RELEASE_TAG=$DEFAULT_TAG" >> $GITHUB_OUTPUT
+          fi
+          
+      # --- 新增步骤：为手动触发创建 Release (如果不存在) ---
+      - name: Create Release for Manual Dispatch
+        if: github.event_name == 'workflow_dispatch'
+        id: create_release_manual
+        uses: softprops/action-gh-release@v1
+        with:
+          # 注意：请在仓库设置中添加名为 GITHUB_TOKEN 的 Secret
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.get_tag.outputs.RELEASE_TAG }}
+          name: "Build ${{ steps.get_tag.outputs.RELEASE_TAG }}"
+          body: "Automated release from workflow dispatch."
+          draft: false
+          prerelease: false
+          files: ./artifact/firmware/* # 直接在此步骤上传文件
+
+      # --- 修改原有步骤：仅在 release 事件时上传 ---
+      # 注意：此步骤与上面的步骤不会同时执行，因为它们的 'if' 条件互斥。
+      - name: Upload release asset for Release Event
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@2.11.3
+        with:
+          # 注意：请在仓库设置中添加名为 GITHUB_TOKEN 的 Secret
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ./artifact/firmware/*
+          tag: ${{ github.event.release.tag_name }}
+          file_glob: true
